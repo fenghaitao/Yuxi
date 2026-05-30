@@ -8,6 +8,7 @@
     :send-button-disabled="sendButtonDisabled"
     :placeholder="placeholder"
     :mention="mention"
+    :thread-id="threadId"
     @send="handleSend"
     @keydown="handleKeyDown"
   >
@@ -87,16 +88,6 @@
     </template>
     <template #actions-right>
       <div class="input-actions-right">
-        <button
-          v-if="hasActiveThread"
-          class="input-action-btn"
-          :class="{ active: isPanelOpen }"
-          @click.stop="$emit('toggle-panel')"
-          title="查看文件"
-        >
-          <FolderCode :size="18" />
-          <span>文件</span>
-        </button>
         <slot name="actions-left-extra"></slot>
       </div>
     </template>
@@ -108,7 +99,7 @@ import { computed, ref, watch } from 'vue'
 import MessageInputComponent from '@/components/MessageInputComponent.vue'
 import ImagePreviewComponent from '@/components/ImagePreviewComponent.vue'
 import AttachmentOptionsComponent from '@/components/AttachmentOptionsComponent.vue'
-import { FolderCode, SquareCheck } from 'lucide-vue-next'
+import { SquareCheck } from 'lucide-vue-next'
 import {
   CheckCircleOutlined,
   ClockCircleOutlined,
@@ -123,8 +114,8 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
   sendButtonDisabled: { type: Boolean, default: false },
   mention: { type: Object, default: () => null },
+  threadId: { type: String, default: '' },
   supportsFileUpload: { type: Boolean, default: false },
-  isPanelOpen: { type: Boolean, default: false },
   hasActiveThread: { type: Boolean, default: true },
   todos: {
     type: Array,
@@ -132,13 +123,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits([
-  'update:modelValue',
-  'send',
-  'keydown',
-  'upload-attachment',
-  'toggle-panel'
-])
+const emit = defineEmits(['update:modelValue', 'send', 'keydown', 'upload-attachment'])
 
 const inputRef = ref(null)
 const currentImage = ref(null)
@@ -252,7 +237,7 @@ const getTodoStatusLabel = (status) => {
   padding: 6px 8px;
   // height: 28px;
   border-radius: 8px;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--gray-600);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -357,9 +342,9 @@ const getTodoStatusLabel = (status) => {
 .todo-item {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  gap: 4px;
+  padding: 6px 6px;
+  border-radius: 6px;
   background: var(--light-70);
   box-shadow: inset 0 0 0 1px var(--light-70);
 }

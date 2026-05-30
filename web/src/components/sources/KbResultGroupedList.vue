@@ -12,7 +12,7 @@
           @click="toggleFile(fileGroup.filename)"
         >
           <div class="file-info">
-            <FileText :size="14" />
+            <FileText :size="14" color="var(--gray-600)" />
             <span class="file-name">{{ fileGroup.filename }}</span>
             <span class="chunk-count">{{ fileGroup.chunks.length }} chunks</span>
           </div>
@@ -68,7 +68,7 @@ import KbChunkDetailModal from './KbChunkDetailModal.vue'
 
 const props = defineProps({
   chunks: {
-    type: Array,
+    type: [Array, Object],
     default: () => []
   },
   showSummary: {
@@ -86,8 +86,18 @@ const modalVisible = ref(false)
 const selectedChunk = ref(null)
 const selectedChunkIndex = ref(null)
 
+const resolveChunks = (input) => {
+  if (Array.isArray(input)) return input
+  if (!input || typeof input !== 'object') return []
+
+  if (Array.isArray(input.chunks)) return input.chunks
+  if (Array.isArray(input.data?.chunks)) return input.data.chunks
+
+  return []
+}
+
 const normalizedChunks = computed(() =>
-  (props.chunks || []).filter((item) => item && typeof item === 'object' && item.content)
+  resolveChunks(props.chunks).filter((item) => item && typeof item === 'object' && item.content)
 )
 
 const fileGroupList = computed(() => {
@@ -109,17 +119,11 @@ const fileGroupList = computed(() => {
 watch(
   fileGroupList,
   (groups) => {
-    // 分组变化时清理失效展开项，并默认展开“仅包含一个块”的文件分组。
+    // 分组变化时仅清理失效展开项，默认保持折叠状态。
     const validFilenames = new Set(groups.map((item) => item.filename))
-    const nextExpanded = new Set(
+    expandedFiles.value = new Set(
       [...expandedFiles.value].filter((filename) => validFilenames.has(filename))
     )
-    for (const group of groups) {
-      if (group.chunks.length === 1) {
-        nextExpanded.add(group.filename)
-      }
-    }
-    expandedFiles.value = nextExpanded
   },
   { immediate: true }
 )
@@ -200,7 +204,6 @@ const openChunkDetail = (chunk, index) => {
 
         .file-name {
           font-size: 13px;
-          font-weight: 500;
           color: var(--gray-700);
           flex: 1;
           min-width: 0;

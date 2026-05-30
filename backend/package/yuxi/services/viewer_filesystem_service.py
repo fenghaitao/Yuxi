@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import mimetypes
 import shutil
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
-from fastapi import HTTPException
+import aiofiles
+from fastapi import HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuxi.agents.backends import KBS_PATH, KnowledgeBaseReadonlyBackend, resolve_visible_knowledge_bases_for_context
 from yuxi.agents.backends.sandbox import (
     SKILLS_PATH,
     USER_DATA_PATH,
@@ -88,6 +89,7 @@ _PROTECTED_USER_DATA_ROOTS = frozenset(
         VIRTUAL_PATH_OUTPUTS,
     }
 )
+_LEGACY_KBS_PATH = "/home/gem/kbs"
 
 
 def _detect_preview_type(path: str, raw_content: bytes) -> tuple[str, bool, str | None]:
@@ -137,7 +139,7 @@ def _normalize_path(path: str | None) -> str:
     normalized = (path or "/").strip() or "/"
     if not normalized.startswith("/"):
         normalized = f"/{normalized}"
-    return normalized.rstrip("/") if normalized not in {"/", KBS_PATH, SKILLS_PATH, USER_DATA_PATH} else normalized
+    return normalized.rstrip("/") if normalized not in {"/", SKILLS_PATH, USER_DATA_PATH} else normalized
 
 
 def _is_path_within(path: Path, root: Path) -> bool:
@@ -149,7 +151,13 @@ def _is_path_within(path: Path, root: Path) -> bool:
 
 
 def _resolve_local_user_data_path(thread_id: str, user_id: str, path: str) -> Path:
-    actual_path = resolve_virtual_path(thread_id, path, user_id=user_id)
+    try:
+        actual_path = resolve_virtual_path(thread_id, path, user_id=user_id)
+    except ValueError as exc:
+        # 真实路径越过允许根目录时，按权限拒绝处理，而不是当作普通参数错误。
+        if "path traversal" in str(exc):
+            raise HTTPException(status_code=403, detail="Access denied") from exc
+        raise
     resolved_path = actual_path.resolve()
     allowed_roots = (
         sandbox_user_data_dir(thread_id).resolve(),
@@ -164,12 +172,12 @@ def _is_user_data_path(path: str) -> bool:
     return path == USER_DATA_PATH or path.startswith(f"{USER_DATA_PATH}/")
 
 
+def _is_workspace_path(path: str) -> bool:
+    return path == VIRTUAL_PATH_WORKSPACE or path.startswith(f"{VIRTUAL_PATH_WORKSPACE}/")
+
+
 def _is_skills_path(path: str) -> bool:
     return path == SKILLS_PATH or path.startswith(f"{SKILLS_PATH}/")
-
-
-def _is_kbs_path(path: str) -> bool:
-    return path == KBS_PATH or path.startswith(f"{KBS_PATH}/")
 
 
 def _is_in_home_gem(path: str) -> bool:
@@ -181,7 +189,7 @@ def _is_in_home_gem(path: str) -> bool:
         return False
     if path.startswith(f"{SKILLS_PATH}/") or path == SKILLS_PATH:
         return False
-    if path.startswith(f"{KBS_PATH}/") or path == KBS_PATH:
+    if path == _LEGACY_KBS_PATH or path.startswith(f"{_LEGACY_KBS_PATH}/"):
         return False
     return True
 
@@ -190,12 +198,6 @@ def _strip_skills_prefix(path: str) -> str:
     if path == SKILLS_PATH:
         return "/"
     return path[len(SKILLS_PATH) :] or "/"
-
-
-def _strip_kbs_prefix(path: str) -> str:
-    if path == KBS_PATH:
-        return "/"
-    return path[len(KBS_PATH) :] or "/"
 
 
 def _remap_prefixed_entry(entry: dict, prefix: str) -> dict:
@@ -246,25 +248,68 @@ def _sort_entries(entries: list[dict]) -> list[dict]:
     )
 
 
+def _entry_for_local_path(thread_id: str, user_id: str, path: Path) -> dict:
+    stat = path.stat()
+    is_dir = path.is_dir()
+    display_path = virtual_path_for_thread_file(thread_id, path, user_id=user_id)
+    if is_dir and not display_path.endswith("/"):
+        display_path = f"{display_path}/"
+    return {
+        "path": display_path,
+        "name": path.name,
+        "is_dir": is_dir,
+        "size": 0 if is_dir else stat.st_size,
+        "modified_at": utc_isoformat_from_timestamp(stat.st_mtime) or "",
+    }
+
+
 def _list_local_entries(thread_id: str, user_id: str, actual_path) -> list[dict]:
     """List a local directory and remap children back into viewer virtual paths."""
     entries: list[dict] = []
     for child in sorted(actual_path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-        stat = child.stat()
-        is_dir = child.is_dir()
-        display_path = virtual_path_for_thread_file(thread_id, child, user_id=user_id)
-        if is_dir and not display_path.endswith("/"):
-            display_path = f"{display_path}/"
-        entries.append(
-            {
-                "path": display_path,
-                "name": child.name,
-                "is_dir": is_dir,
-                "size": 0 if is_dir else stat.st_size,
-                "modified_at": utc_isoformat_from_timestamp(stat.st_mtime) or "",
-            }
-        )
+        entries.append(_entry_for_local_path(thread_id, user_id, child))
     return entries
+
+
+def _validate_child_name(name: str, *, field_name: str) -> str:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise HTTPException(status_code=422, detail=f"{field_name} 不能为空")
+    if clean_name in {".", ".."} or "/" in clean_name or "\\" in clean_name:
+        raise HTTPException(status_code=422, detail=f"{field_name} 不能包含路径分隔符")
+    if PurePosixPath(clean_name).name != clean_name:
+        raise HTTPException(status_code=422, detail=f"{field_name} 不能包含路径分隔符")
+    return clean_name
+
+
+def _resolve_workspace_parent_dir(thread_id: str, user_id: str, parent_path: str) -> Path:
+    normalized_parent = _normalize_path(parent_path)
+    if not _is_workspace_path(normalized_parent):
+        raise HTTPException(status_code=400, detail="当前路径不支持写入")
+
+    ensure_thread_dirs(thread_id, user_id)
+    try:
+        actual_parent = _resolve_local_user_data_path(thread_id, user_id, normalized_parent)
+    except ValueError as exc:
+        # workspace 写入边界按真实路径校验，软链接逃逸应表现为权限拒绝。
+        if "path traversal" in str(exc):
+            raise HTTPException(status_code=403, detail="Access denied") from exc
+        raise
+    if not actual_parent.exists():
+        raise HTTPException(status_code=404, detail="目标目录不存在")
+    if not actual_parent.is_dir():
+        raise HTTPException(status_code=400, detail="目标路径不是目录")
+    return actual_parent
+
+
+def _resolve_new_workspace_child(thread_id: str, user_id: str, parent_path: Path, name: str) -> Path:
+    target_path = parent_path / name
+    workspace_root = sandbox_workspace_dir(thread_id, user_id).resolve()
+    if not _is_path_within(target_path.resolve(strict=False), workspace_root):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail="同名文件或文件夹已存在")
+    return target_path
 
 
 def _list_user_data_root_entries(thread_id: str, user_id: str) -> list[dict]:
@@ -303,11 +348,9 @@ async def _resolve_viewer_state(
         agent_id=agent_id,
         agent_config_id=agent_config_id,
     )
-    visible_kbs = await resolve_visible_knowledge_bases_for_context(runtime_context)
     selected_skills = normalize_selected_skills(getattr(runtime_context, "skills", None) or [])
     skills_backend = SelectedSkillsReadonlyBackend(selected_slugs=selected_skills)
-    kb_backend = KnowledgeBaseReadonlyBackend(visible_kbs=visible_kbs)
-    return sandbox_backend, skills_backend, kb_backend, selected_skills
+    return sandbox_backend, skills_backend, selected_skills
 
 
 async def list_viewer_filesystem_tree(
@@ -323,7 +366,7 @@ async def list_viewer_filesystem_tree(
         raise HTTPException(status_code=422, detail="thread_id 不能为空")
 
     normalized_path = _normalize_path(path)
-    sandbox_backend, skills_backend, kb_backend, selected_skills = await _resolve_viewer_state(
+    sandbox_backend, skills_backend, selected_skills = await _resolve_viewer_state(
         thread_id=thread_id,
         agent_id=agent_id,
         agent_config_id=agent_config_id,
@@ -340,8 +383,6 @@ async def list_viewer_filesystem_tree(
         )
         if selected_skills:
             entries.append({"path": f"{SKILLS_PATH}/", "name": "skills", "is_dir": True, "size": 0, "modified_at": ""})
-        if kb_backend.has_entries():
-            entries.append({"path": f"{KBS_PATH}/", "name": "kbs", "is_dir": True, "size": 0, "modified_at": ""})
 
         return {"entries": _sort_entries(entries)}
 
@@ -364,10 +405,6 @@ async def list_viewer_filesystem_tree(
             entries = await asyncio.to_thread(skills_backend.ls_info, _strip_skills_prefix(normalized_path))
             remapped = [_remap_prefixed_entry(entry, SKILLS_PATH) for entry in entries]
             return {"entries": _sort_entries(remapped)}
-        if _is_kbs_path(normalized_path):
-            entries = await asyncio.to_thread(kb_backend.ls_info, _strip_kbs_prefix(normalized_path))
-            remapped = [_remap_prefixed_entry(entry, KBS_PATH) for entry in entries]
-            return {"entries": _sort_entries(remapped)}
     except PermissionError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ValueError as e:
@@ -389,7 +426,7 @@ async def read_viewer_file_content(
         raise HTTPException(status_code=422, detail="thread_id 不能为空")
     normalized_path = _normalize_path(path)
 
-    sandbox_backend, skills_backend, kb_backend, _selected_skills = await _resolve_viewer_state(
+    sandbox_backend, skills_backend, _selected_skills = await _resolve_viewer_state(
         thread_id=thread_id,
         agent_id=agent_id,
         agent_config_id=agent_config_id,
@@ -421,8 +458,6 @@ async def read_viewer_file_content(
             }
         elif _is_skills_path(normalized_path):
             responses = await asyncio.to_thread(skills_backend.download_files, [_strip_skills_prefix(normalized_path)])
-        elif _is_kbs_path(normalized_path):
-            responses = await asyncio.to_thread(kb_backend.download_files, [_strip_kbs_prefix(normalized_path)])
         elif _is_in_home_gem(normalized_path):
             # /home/gem/ 下的其他文件（如 workspace 目录）
             responses = await asyncio.to_thread(sandbox_backend.download_files, [normalized_path])
@@ -482,7 +517,7 @@ async def download_viewer_file(
     db: AsyncSession,
 ) -> StreamingResponse:
     normalized_path = _normalize_path(path)
-    sandbox_backend, skills_backend, kb_backend, _selected_skills = await _resolve_viewer_state(
+    sandbox_backend, skills_backend, _selected_skills = await _resolve_viewer_state(
         thread_id=thread_id,
         agent_id=agent_id,
         agent_config_id=agent_config_id,
@@ -507,8 +542,6 @@ async def download_viewer_file(
 
         if _is_skills_path(normalized_path):
             responses = await asyncio.to_thread(skills_backend.download_files, [_strip_skills_prefix(normalized_path)])
-        elif _is_kbs_path(normalized_path):
-            responses = await asyncio.to_thread(kb_backend.download_files, [_strip_kbs_prefix(normalized_path)])
         elif _is_in_home_gem(normalized_path):
             # /home/gem/ 下的其他文件（如 workspace 目录）
             responses = await asyncio.to_thread(sandbox_backend.download_files, [normalized_path])
@@ -579,3 +612,91 @@ async def delete_viewer_file(
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     return {"success": True, "path": normalized_path}
+
+
+async def create_viewer_directory(
+    *,
+    thread_id: str,
+    parent_path: str,
+    name: str,
+    agent_id: str | None,
+    agent_config_id: int | None,
+    current_user: User,
+    db: AsyncSession,
+) -> dict:
+    if not thread_id:
+        raise HTTPException(status_code=422, detail="thread_id 不能为空")
+
+    await _resolve_viewer_state(
+        thread_id=thread_id,
+        agent_id=agent_id,
+        agent_config_id=agent_config_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    user_id = str(current_user.id)
+    directory_name = _validate_child_name(name, field_name="文件夹名")
+
+    try:
+        actual_parent = _resolve_workspace_parent_dir(thread_id, user_id, parent_path)
+        target_path = _resolve_new_workspace_child(thread_id, user_id, actual_parent, directory_name)
+        await asyncio.to_thread(target_path.mkdir)
+    except FileExistsError as e:
+        raise HTTPException(status_code=400, detail="同名文件或文件夹已存在") from e
+    except PermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    return {"success": True, "entry": _entry_for_local_path(thread_id, user_id, target_path)}
+
+
+async def upload_viewer_file(
+    *,
+    thread_id: str,
+    parent_path: str,
+    file: UploadFile,
+    agent_id: str | None,
+    agent_config_id: int | None,
+    current_user: User,
+    db: AsyncSession,
+) -> dict:
+    if not thread_id:
+        raise HTTPException(status_code=422, detail="thread_id 不能为空")
+
+    await _resolve_viewer_state(
+        thread_id=thread_id,
+        agent_id=agent_id,
+        agent_config_id=agent_config_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    user_id = str(current_user.id)
+    file_name = _validate_child_name(Path(file.filename or "").name, field_name="文件名")
+    target_path: Path | None = None
+    created_file = False
+    upload_completed = False
+
+    try:
+        actual_parent = _resolve_workspace_parent_dir(thread_id, user_id, parent_path)
+        target_path = _resolve_new_workspace_child(thread_id, user_id, actual_parent, file_name)
+        async with aiofiles.open(target_path, "xb") as buffer:
+            created_file = True
+            while chunk := await file.read(1024 * 1024):
+                await buffer.write(chunk)
+        upload_completed = True
+    except FileExistsError as e:
+        raise HTTPException(status_code=400, detail="同名文件或文件夹已存在") from e
+    except PermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    finally:
+        # 上传来自用户输入，传输中断时清理本次创建的半成品文件。
+        if created_file and not upload_completed and target_path and target_path.exists():
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(target_path.unlink)
+
+    return {"success": True, "entry": _entry_for_local_path(thread_id, user_id, target_path)}

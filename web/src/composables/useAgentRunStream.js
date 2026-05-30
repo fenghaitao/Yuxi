@@ -18,15 +18,14 @@ const parseRunSeq = (value) => {
   const text = normalizeRunSeq(value)
   if (text.includes('-')) {
     const [majorRaw, minorRaw] = text.split('-', 2)
-    let major = 0n
-    let minor = 0n
+
     try {
-      major = BigInt(majorRaw || '0')
-      minor = BigInt(minorRaw || '0')
+      const major = BigInt(majorRaw || '0')
+      const minor = BigInt(minorRaw || '0')
+      return { kind: 'stream', major, minor }
     } catch {
       return { kind: 'legacy', value: 0 }
     }
-    return { kind: 'stream', major, minor }
   }
 
   const numberValue = Number.parseInt(text, 10)
@@ -240,6 +239,8 @@ export function useAgentRunStream({
           if (RUN_TERMINAL_STATUSES.has(data.status)) {
             ts.activeRunId = null
             ts.lastRetryableJobTry = null
+            ts.replyLoadingVisible = false
+            ts.pendingRequestId = null
             clearActiveRunSnapshot(threadId)
             fetchThreadMessages({ agentId: unref(currentAgentId), threadId, delay: 200 }).finally(
               () => {
@@ -266,6 +267,8 @@ export function useAgentRunStream({
           ts.isStreaming = false
           ts.activeRunId = null
           ts.lastRetryableJobTry = null
+          ts.replyLoadingVisible = false
+          ts.pendingRequestId = null
           clearActiveRunSnapshot(threadId)
           fetchThreadMessages({ agentId: unref(currentAgentId), threadId, delay: 300 }).finally(
             () => {
@@ -288,6 +291,9 @@ export function useAgentRunStream({
             }
           }, 500)
         }
+      } else if (ts.activeRunId !== runId) {
+        ts.replyLoadingVisible = false
+        ts.pendingRequestId = null
       }
     } finally {
       if (ts.runStreamAbortController === runController) {
@@ -295,6 +301,8 @@ export function useAgentRunStream({
       }
       if (!ts.activeRunId) {
         ts.isStreaming = false
+        ts.replyLoadingVisible = false
+        ts.pendingRequestId = null
       }
     }
   }
@@ -337,6 +345,8 @@ export function useAgentRunStream({
     ts.activeRunId = null
     ts.runLastSeq = '0'
     ts.isStreaming = false
+    ts.replyLoadingVisible = false
+    ts.pendingRequestId = null
     clearActiveRunSnapshot(threadId)
   }
 

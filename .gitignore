@@ -40,6 +40,7 @@ cache
 .pytest_cache
 .playwright
 .playwright-cli
+.playwright-mcp/
 
 
 ### IDE
@@ -51,6 +52,7 @@ cache
 .cursor
 .trae
 .codex
+.sisyphus
 .pytest_cache
 
 *.secret*
@@ -76,3 +78,5 @@ docs/vibe
 .cursorrules
 
 /models
+
+.taskr/

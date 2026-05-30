@@ -1,8 +1,8 @@
 <template>
-  <BaseToolCall :tool-call="toolCall" :default-expanded="true" :hide-params="true">
+  <BaseToolCall :tool-call="toolCall" :hide-params="true">
     <template #header-success>
       <span class="sep-header">
-        <span class="keywords">列出数据库表</span>
+        <span class="note">列出数据库表</span>
       </span>
     </template>
 
@@ -47,7 +47,7 @@ const formatResult = (content) => {
 <style lang="less" scoped>
 .mysql-result {
   border-radius: 8px;
-  padding: 12px;
+  padding: 4px;
 
   .result-text {
     margin: 0;

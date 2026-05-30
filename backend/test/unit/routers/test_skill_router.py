@@ -4,11 +4,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from server.routers.skill_router import skills
-from server.utils.auth_middleware import get_admin_user, get_db, get_superadmin_user
+from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.storage.postgres.models_business import Skill, User
 
 
-def _build_app(*, allow_superadmin: bool) -> FastAPI:
+def _build_app(*, allow_admin: bool = True) -> FastAPI:
     app = FastAPI()
     app.include_router(skills, prefix="/api")
 
@@ -16,6 +16,8 @@ def _build_app(*, allow_superadmin: bool) -> FastAPI:
         return None
 
     async def fake_admin_user():
+        if not allow_admin:
+            raise HTTPException(status_code=403, detail="需要管理员权限")
         return User(
             username="admin",
             user_id="admin",
@@ -23,19 +25,17 @@ def _build_app(*, allow_superadmin: bool) -> FastAPI:
             role="admin",
         )
 
-    async def fake_superadmin_user():
-        if not allow_superadmin:
-            raise HTTPException(status_code=403, detail="需要超级管理员权限")
+    async def fake_required_user():
         return User(
-            username="root",
-            user_id="root",
+            username="admin" if allow_admin else "user",
+            user_id="admin" if allow_admin else "user",
             password_hash="x",
-            role="superadmin",
+            role="admin" if allow_admin else "user",
         )
 
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_admin_user] = fake_admin_user
-    app.dependency_overrides[get_superadmin_user] = fake_superadmin_user
+    app.dependency_overrides[get_required_user] = fake_required_user
     return app
 
 
@@ -52,7 +52,7 @@ def test_list_skills_route_returns_data(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.list_skills", fake_list_skills)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
     resp = client.get("/api/system/skills")
     assert resp.status_code == 200, resp.text
@@ -61,15 +61,21 @@ def test_list_skills_route_returns_data(monkeypatch):
     assert payload["data"][0]["slug"] == "demo"
 
 
-def test_import_skill_requires_superadmin():
-    app = _build_app(allow_superadmin=False)
+def test_skill_management_requires_admin():
+    app = _build_app(allow_admin=False)
     client = TestClient(app)
 
-    resp = client.post(
+    dependency_resp = client.get("/api/system/skills/dependency-options")
+    assert dependency_resp.status_code == 403
+
+    import_resp = client.post(
         "/api/system/skills/import",
         files={"file": ("demo.zip", b"not zip", "application/zip")},
     )
-    assert resp.status_code == 403
+    assert import_resp.status_code == 403
+
+    delete_resp = client.delete("/api/system/skills/demo")
+    assert delete_resp.status_code == 403
 
 
 def test_import_skill_route_accepts_skill_md(monkeypatch):
@@ -90,7 +96,7 @@ def test_import_skill_route_accepts_skill_md(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.import_skill_zip", fake_import_skill_zip)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
 
     resp = client.post(
@@ -100,7 +106,7 @@ def test_import_skill_route_accepts_skill_md(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert captured["filename"] == "SKILL.md"
     assert "name: demo" in captured["file_bytes"]
-    assert captured["created_by"] == "root"
+    assert captured["created_by"] == "admin"
 
 
 def test_update_skill_file_passes_operator(monkeypatch):
@@ -114,7 +120,7 @@ def test_update_skill_file_passes_operator(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.update_skill_file", fake_update_skill_file)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
 
     resp = client.put(
@@ -127,7 +133,7 @@ def test_update_skill_file_passes_operator(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert captured["slug"] == "demo"
     assert captured["relative_path"] == "SKILL.md"
-    assert captured["updated_by"] == "root"
+    assert captured["updated_by"] == "admin"
 
 
 def test_dependency_options_route(monkeypatch):
@@ -140,7 +146,7 @@ def test_dependency_options_route(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.get_skill_dependency_options", fake_get_skill_dependency_options)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
     resp = client.get("/api/system/skills/dependency-options")
     assert resp.status_code == 200, resp.text
@@ -178,7 +184,7 @@ def test_update_skill_dependencies_route(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.update_skill_dependencies", fake_update_skill_dependencies)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
     resp = client.put(
         "/api/system/skills/demo/dependencies",
@@ -193,7 +199,7 @@ def test_update_skill_dependencies_route(monkeypatch):
     assert captured["tool_dependencies"] == ["calculator"]
     assert captured["mcp_dependencies"] == ["mcp-a"]
     assert captured["skill_dependencies"] == ["other-skill"]
-    assert captured["updated_by"] == "root"
+    assert captured["updated_by"] == "admin"
 
 
 def test_list_remote_skills_route(monkeypatch):
@@ -203,7 +209,7 @@ def test_list_remote_skills_route(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.list_remote_skills", fake_list_remote_skills)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
     resp = client.post("/api/system/skills/remote/list", json={"source": "anthropics/skills"})
     assert resp.status_code == 200, resp.text
@@ -230,7 +236,7 @@ def test_install_remote_skill_route(monkeypatch):
 
     monkeypatch.setattr("server.routers.skill_router.install_remote_skill", fake_install_remote_skill)
 
-    app = _build_app(allow_superadmin=True)
+    app = _build_app()
     client = TestClient(app)
     resp = client.post(
         "/api/system/skills/remote/install",
@@ -242,4 +248,34 @@ def test_install_remote_skill_route(monkeypatch):
     assert payload["data"]["slug"] == "frontend-design"
     assert captured["source"] == "anthropics/skills"
     assert captured["skill"] == "frontend-design"
-    assert captured["created_by"] == "root"
+    assert captured["created_by"] == "admin"
+
+
+def test_list_skills_route_normal_user_success(monkeypatch):
+    async def fake_list_skills(_db):
+        return [
+            Skill(
+                slug="test-skill",
+                name="test-skill-name",
+                description="test skill description",
+                dir_path="skills/test-skill",
+            )
+        ]
+
+    monkeypatch.setattr("server.routers.skill_router.list_skills", fake_list_skills)
+
+    # 普通用户应该也能成功获取列表，但返回的字段应被安全白名单投影过滤
+    app = _build_app(allow_admin=False)
+    client = TestClient(app)
+    resp = client.get("/api/system/skills")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["success"] is True
+    skill_data = payload["data"][0]
+    assert skill_data["slug"] == "test-skill"
+    assert skill_data["name"] == "test-skill-name"
+    # NOTE: 验证敏感字段如 dir_path、created_by 以及其它元数据已全部被白名单机制过滤，不发生越权泄露
+    assert "dir_path" not in skill_data
+    assert "created_by" not in skill_data
+    assert "updated_by" not in skill_data
+    assert "content_hash" not in skill_data

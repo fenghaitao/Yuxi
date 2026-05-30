@@ -1,8 +1,8 @@
 <template>
-  <BaseToolCall :tool-call="toolCall" :default-expanded="true">
+  <BaseToolCall :tool-call="toolCall">
     <template #header-success>
       <span class="sep-header">
-        <span class="keywords">执行SQL查询：</span>
+        <span class="note">执行SQL查询：</span>
         <span class="description">{{
           truncateSql(extractSql(toolCall.args || toolCall.function?.arguments))
         }}</span>
@@ -90,7 +90,7 @@ const truncateSql = (sql, maxLength = 50) => {
     color: var(--gray-800);
     white-space: pre-wrap;
     word-break: break-word;
-    padding: 6px;
+    padding: 4px;
     border-radius: 4px;
     font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
     max-height: 200px;
@@ -99,9 +99,8 @@ const truncateSql = (sql, maxLength = 50) => {
 }
 
 .mysql-result {
-  // background: var(--gray-0);
   border-radius: 8px;
-  padding: 12px;
+  padding: 4px;
 
   .result-text {
     margin: 0;

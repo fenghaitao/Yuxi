@@ -1,116 +1,71 @@
 <template>
   <div class="extensions-view extension-page-root">
-    <div class="extensions-header">
-      <a-tabs v-model:activeKey="activeTab" class="extensions-tabs">
-        <a-tab-pane key="tools" tab="工具" />
-        <a-tab-pane key="mcp" tab="MCP 管理" />
-        <a-tab-pane key="subagents" tab="Subagents 管理" />
-        <a-tab-pane key="skills" tab="Skills 管理" />
-      </a-tabs>
-      <div class="header-actions">
-        <!-- Skills Tab 的按钮 -->
-        <template v-if="activeTab === 'skills'">
-          <a-button
-            @click="handleOpenRemoteInstall"
-            :disabled="skillsLoading || skillsImporting"
-            class="lucide-icon-btn"
-          >
-            <Computer :size="14" />
-            <span>远程安装</span>
-          </a-button>
-          <a-upload
-            accept=".zip,.md"
-            :show-upload-list="false"
-            :custom-request="handleImportUpload"
-            :before-upload="beforeSkillUpload"
-            :disabled="skillsLoading || skillsImporting"
-          >
-            <a-button type="primary" :loading="skillsImporting" class="lucide-icon-btn">
-              <Upload :size="14" />
-              <span>上传 Skill</span>
-            </a-button>
-          </a-upload>
-          <a-button @click="handleSkillsRefresh" :disabled="skillsLoading" class="lucide-icon-btn">
-            <RotateCw :size="14" />
-            <span>刷新</span>
-          </a-button>
-        </template>
-        <!-- Tools Tab 的按钮 -->
-        <template v-else-if="activeTab === 'tools'">
-          <a-button @click="handleToolsRefresh" :disabled="toolsLoading" class="lucide-icon-btn">
-            <RotateCw :size="14" />
-            <span>刷新</span>
-          </a-button>
-        </template>
-        <!-- MCP Tab 的按钮 -->
-        <template v-else-if="activeTab === 'mcp'">
-          <a-button type="primary" @click="handleMcpAdd" class="lucide-icon-btn">
-            <Plus :size="14" />
-            <span>添加 MCP</span>
-          </a-button>
-          <a-button @click="handleMcpRefresh" :disabled="mcpLoading" class="lucide-icon-btn">
-            <RotateCw :size="14" />
-            <span>刷新</span>
-          </a-button>
-        </template>
-        <!-- Subagents Tab 的按钮 -->
-        <template v-else-if="activeTab === 'subagents'">
-          <a-button type="primary" @click="handleSubagentAdd" class="lucide-icon-btn">
-            <Plus :size="14" />
-            <span>添加</span>
-          </a-button>
-          <a-button
-            @click="handleSubagentRefresh"
-            :disabled="subagentsLoading"
-            class="lucide-icon-btn"
-          >
-            <RotateCw :size="14" />
-            <span>刷新</span>
-          </a-button>
-        </template>
+    <PageHeader
+      v-if="!isDetailPage"
+      v-model:active-key="activeTab"
+      title="扩展管理"
+      :tabs="extensionTabs"
+      :loading="activeChildLoading"
+      :show-border="true"
+      aria-label="扩展管理视图切换"
+    />
+
+    <div v-if="!isDetailPage" class="extensions-content">
+      <div v-show="activeTab === 'tools'" class="tab-panel">
+        <ToolsCardList ref="toolsRef" />
+      </div>
+      <div v-show="activeTab === 'skills'" class="tab-panel">
+        <SkillCardList ref="skillsRef" />
+      </div>
+      <div v-show="activeTab === 'mcp'" class="tab-panel">
+        <McpCardList ref="mcpRef" />
+      </div>
+      <div v-show="activeTab === 'subagents'" class="tab-panel">
+        <SubagentCardList ref="subagentsRef" />
       </div>
     </div>
 
-    <div class="extensions-content">
-      <div v-show="activeTab === 'tools'" class="tab-panel">
-        <ToolsManagerComponent ref="toolsRef" @refresh="handleToolsRefresh" />
-      </div>
-      <div v-show="activeTab === 'skills'" class="tab-panel">
-        <SkillsManagerComponent
-          ref="skillsRef"
-          @import="handleSkillsImport"
-          @refresh="handleSkillsRefresh"
-        />
-      </div>
-      <div v-show="activeTab === 'mcp'" class="tab-panel">
-        <McpServersComponent ref="mcpRef" @add="handleMcpAdd" @refresh="handleMcpRefresh" />
-      </div>
-      <div v-show="activeTab === 'subagents'" class="tab-panel">
-        <SubAgentsComponent
-          ref="subagentsRef"
-          @add="handleSubagentAdd"
-          @refresh="handleSubagentRefresh"
-        />
-      </div>
-    </div>
+    <router-view v-else />
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { message } from 'ant-design-vue'
-import { Upload, RotateCw, Plus, Computer } from 'lucide-vue-next'
-import SkillsManagerComponent from '@/components/SkillsManagerComponent.vue'
-import ToolsManagerComponent from '@/components/ToolsManagerComponent.vue'
-import McpServersComponent from '@/components/McpServersComponent.vue'
-import SubAgentsComponent from '@/components/SubAgentsComponent.vue'
+import ToolsCardList from '@/components/extensions/ToolsCardList.vue'
+import McpCardList from '@/components/extensions/McpCardList.vue'
+import SubagentCardList from '@/components/extensions/SubagentCardList.vue'
+import SkillCardList from '@/components/extensions/SkillCardList.vue'
+import PageHeader from '@/components/shared/PageHeader.vue'
 
 const route = useRoute()
 const activeTab = ref('tools')
 const skillsRef = ref(null)
+const mcpRef = ref(null)
+const subagentsRef = ref(null)
+const toolsRef = ref(null)
 
-// 监听路由 query 参数变化
+const extensionTabs = [
+  { key: 'tools', label: '工具' },
+  { key: 'mcp', label: 'MCP' },
+  { key: 'subagents', label: 'Subagents' },
+  { key: 'skills', label: 'Skills' }
+]
+
+const isDetailPage = computed(() => {
+  return (
+    route.path.startsWith('/extensions/mcp/') ||
+    route.path.startsWith('/extensions/subagent/') ||
+    route.path.startsWith('/extensions/skill/')
+  )
+})
+
+const activeChildLoading = computed(() => {
+  const refMap = { tools: toolsRef, skills: skillsRef, mcp: mcpRef, subagents: subagentsRef }
+  const child = refMap[activeTab.value]
+  return child?.value?.loading || false
+})
+
 watch(
   () => route.query,
   (query) => {
@@ -120,181 +75,12 @@ watch(
   },
   { immediate: true }
 )
-const toolsRef = ref(null)
-const mcpRef = ref(null)
-const subagentsRef = ref(null)
-
-// Skills 相关状态（从子组件透传）
-const skillsLoading = ref(false)
-const skillsImporting = ref(false)
-const toolsLoading = ref(false)
-const mcpLoading = ref(false)
-const subagentsLoading = ref(false)
-
-// 暴露给子组件的状态更新
-const updateSkillsState = (loading, importing) => {
-  skillsLoading.value = loading
-  skillsImporting.value = importing
-}
-
-const updateToolsState = (loading) => {
-  toolsLoading.value = loading
-}
-
-const updateMcpState = (loading) => {
-  mcpLoading.value = loading
-}
-
-const updateSubagentsState = (loading) => {
-  subagentsLoading.value = loading
-}
-
-// Skills 事件处理
-const handleSkillsImport = () => {
-  // 导入完成后自动刷新
-  handleSkillsRefresh()
-}
-
-const handleSkillsRefresh = () => {
-  if (skillsRef.value?.fetchSkills) {
-    updateSkillsState(true, skillsImporting.value)
-    skillsRef.value.fetchSkills().finally(() => {
-      updateSkillsState(false, skillsImporting.value)
-    })
-  }
-}
-
-const handleOpenRemoteInstall = () => {
-  if (skillsRef.value?.openRemoteInstallModal) {
-    skillsRef.value.openRemoteInstallModal()
-  }
-}
-
-// Tools 事件处理
-const handleToolsRefresh = () => {
-  if (toolsRef.value?.fetchTools) {
-    updateToolsState(true)
-    toolsRef.value.fetchTools().finally(() => {
-      updateToolsState(false)
-    })
-  }
-}
-
-// MCP 事件处理
-const handleMcpAdd = () => {
-  if (mcpRef.value?.showAddModal) {
-    mcpRef.value.showAddModal()
-  }
-}
-
-const handleMcpRefresh = () => {
-  if (mcpRef.value?.fetchServers) {
-    updateMcpState(true)
-    mcpRef.value.fetchServers().finally(() => {
-      updateMcpState(false)
-    })
-  }
-}
-
-// Subagents 事件处理
-const handleSubagentAdd = () => {
-  if (subagentsRef.value?.showAddModal) {
-    subagentsRef.value.showAddModal()
-  }
-}
-
-const handleSubagentRefresh = () => {
-  if (subagentsRef.value?.fetchSubAgents) {
-    updateSubagentsState(true)
-    subagentsRef.value.fetchSubAgents().finally(() => {
-      updateSubagentsState(false)
-    })
-  }
-}
-
-// 上传前校验文件名：仅允许 .zip 或 SKILL.md
-const beforeSkillUpload = (file) => {
-  const lower = file.name.toLowerCase()
-  if (!lower.endsWith('.zip') && lower !== 'skill.md') {
-    message.error('仅支持上传 .zip 文件或 SKILL.md 文件')
-    return false
-  }
-  return true
-}
-
-// 处理导入上传
-const handleImportUpload = async ({ file, onSuccess, onError }) => {
-  if (skillsRef.value?.handleImportUpload) {
-    updateSkillsState(skillsLoading.value, true)
-    try {
-      await skillsRef.value.handleImportUpload({ file, onSuccess, onError })
-      handleSkillsImport()
-    } catch (e) {
-      onError?.(e)
-    } finally {
-      updateSkillsState(skillsLoading.value, false)
-    }
-  }
-}
 </script>
 
 <style scoped lang="less">
 @import '@/assets/css/extensions.less';
 
 .extensions-view {
-  .extensions-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--gray-150);
-    background-color: var(--gray-0);
-
-    .extensions-tabs {
-      flex: 1;
-      height: auto;
-      display: flex;
-      flex-direction: column;
-
-      :deep(.ant-tabs-nav) {
-        margin: 0;
-        padding: 0;
-
-        &::before {
-          border-bottom: none;
-        }
-      }
-
-      :deep(.ant-tabs-nav::after) {
-        content: none;
-      }
-
-      :deep(.ant-tabs-nav-left-bar) {
-        display: none;
-      }
-
-      :deep(.ant-tabs-items) {
-        padding: 0;
-      }
-
-      :deep(.ant-tabs-tab) {
-        padding: 12px 16px;
-        font-size: 14px;
-        margin: 0;
-      }
-
-      :deep(.ant-tabs-ink-bar) {
-        display: block;
-      }
-    }
-
-    .header-actions {
-      display: flex;
-      gap: 8px;
-      padding: 8px 0;
-    }
-  }
-
   .extensions-content {
     flex: 1;
     min-height: 0;
@@ -303,7 +89,7 @@ const handleImportUpload = async ({ file, onSuccess, onError }) => {
     .tab-panel {
       height: 100%;
       min-height: 0;
-      overflow: hidden;
+      overflow-y: auto;
     }
   }
 }

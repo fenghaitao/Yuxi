@@ -1,8 +1,8 @@
 <template>
-  <BaseToolCall :tool-call="toolCall" :default-expanded="true" :hide-params="true">
+  <BaseToolCall :tool-call="toolCall" :hide-params="true">
     <template #header-success>
       <span class="sep-header">
-        <span class="keywords">描述表结构：</span>
+        <span class="note">描述表结构：</span>
         <span class="description code">{{
           extractTableName(toolCall.args || toolCall.function?.arguments)
         }}</span>
@@ -65,7 +65,7 @@ const extractTableName = (args) => {
 <style lang="less" scoped>
 .mysql-result {
   border-radius: 8px;
-  padding: 12px;
+  padding: 4px;
 
   .result-text {
     margin: 0;

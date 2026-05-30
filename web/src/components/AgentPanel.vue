@@ -3,30 +3,15 @@
     <!-- 拖拽手柄 -->
     <div class="resize-handle" @pointerdown="startResize"></div>
     <div class="panel-header">
-      <div class="panel-title">
-        <FolderCode :size="20" class="header-icon" />
-        <span><strong>状态工作台</strong></span>
-      </div>
-      <div class="header-actions">
-        <button class="close-btn" @click="$emit('close')">
-          <X :size="18" />
-        </button>
-      </div>
-    </div>
-
-    <div class="tabs">
-      <div class="tab active">文件系统</div>
-      <div class="tab-actions">
-        <button
-          class="tab-action-btn"
-          :title="isExpanded ? '恢复高度' : '向上展开'"
-          @click="emit('toggle-expand')"
-        >
-          <component :is="isExpanded ? ChevronsDownUp : ChevronsUpDown" :size="15" />
-        </button>
-        <button class="tab-action-btn" title="刷新" @click="emitRefresh">
-          <RefreshCw :size="15" />
-        </button>
+      <div class="panel-header-main">
+        <div class="panel-title">
+          <span><strong>文件系统</strong></span>
+        </div>
+        <div class="window-actions">
+          <button class="header-action-btn" title="刷新" @click="emitRefresh">
+            <RefreshCw :size="15" />
+          </button>
+        </div>
       </div>
     </div>
     <div class="tab-content">
@@ -87,6 +72,7 @@
               :filePath="currentFilePath"
               :fullHeight="true"
               :showClose="true"
+              closeVariant="collapse-right"
               :showDownload="true"
               :showFullscreen="true"
               @download="downloadFile"
@@ -128,15 +114,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import {
-  ChevronsDownUp,
-  ChevronsUpDown,
-  Download,
-  FolderCode,
-  RefreshCw,
-  Trash2,
-  X
-} from 'lucide-vue-next'
+import { Download, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { Modal, message } from 'ant-design-vue'
 import FileTreeComponent from '@/components/FileTreeComponent.vue'
 import AgentFilePreview from '@/components/AgentFilePreview.vue'
@@ -151,10 +129,6 @@ const props = defineProps({
   agentState: {
     type: Object,
     default: () => ({})
-  },
-  threadFiles: {
-    type: Array,
-    default: () => []
   },
   threadId: {
     type: String,
@@ -171,15 +145,12 @@ const props = defineProps({
   panelRatio: {
     type: Number,
     default: 0.35
-  },
-  isExpanded: {
-    type: Boolean,
-    default: false
   }
 })
 
-const emit = defineEmits(['refresh', 'close', 'resize', 'resizing', 'toggle-expand'])
+const emit = defineEmits(['refresh', 'resize', 'resizing'])
 const INLINE_PREVIEW_MIN_WIDTH = 920
+const DISPLAY_ROOT_DIRECTORY_NAME = 'user-data'
 
 const panelRef = ref(null)
 const modalVisible = ref(false)
@@ -318,6 +289,16 @@ const getFileName = (fileItem) => {
   return '未知文件'
 }
 
+const loadDirectoryChildren = async (directoryPath) => {
+  const res = await getViewerFileSystemTree(
+    props.threadId,
+    directoryPath,
+    props.agentId,
+    props.agentConfigId
+  )
+  return sortEntries(res?.entries || []).map((entry) => createTreeNode(entry))
+}
+
 const refreshFileSystem = async () => {
   if (!props.threadId) {
     dynamicTreeData.value = []
@@ -336,7 +317,13 @@ const refreshFileSystem = async () => {
       props.agentConfigId
     )
     if (res?.entries) {
-      dynamicTreeData.value = sortEntries(res.entries).map((entry) => createTreeNode(entry))
+      const displayRootEntry = res.entries.find(
+        (entry) => entry?.is_dir && entry.name === DISPLAY_ROOT_DIRECTORY_NAME
+      )
+
+      dynamicTreeData.value = displayRootEntry
+        ? await loadDirectoryChildren(displayRootEntry.path)
+        : []
       expandedKeys.value = []
       selectedKeys.value = []
     } else {
@@ -351,26 +338,15 @@ const refreshFileSystem = async () => {
   }
 }
 
-const loadData = (treeNode) => {
-  return new Promise((resolve) => {
-    if (treeNode.isLeaf || (treeNode.children && treeNode.children.length > 0) || !props.threadId) {
-      resolve()
-      return
-    }
+const loadData = async (treeNode) => {
+  if (treeNode.isLeaf || treeNode.children?.length || !props.threadId) return
 
-    getViewerFileSystemTree(props.threadId, treeNode.key, props.agentId, props.agentConfigId)
-      .then((res) => {
-        if (res?.entries) {
-          const children = sortEntries(res.entries).map((entry) => createTreeNode(entry))
-          dynamicTreeData.value = updateTreeChildren(dynamicTreeData.value, treeNode.key, children)
-        }
-        resolve()
-      })
-      .catch((error) => {
-        console.error('Failed to load children for', treeNode.key, error)
-        resolve()
-      })
-  })
+  try {
+    const children = await loadDirectoryChildren(treeNode.key)
+    dynamicTreeData.value = updateTreeChildren(dynamicTreeData.value, treeNode.key, children)
+  } catch (error) {
+    console.error('Failed to load children for', treeNode.key, error)
+  }
 }
 
 const fileTreeData = computed(() => dynamicTreeData.value)
@@ -669,98 +645,25 @@ watch(useInlinePreview, (isInline) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 2px;
   padding: 4px 16px;
-  height: 56px;
+  min-height: 44px;
   background: var(--gray-25);
   flex-shrink: 0;
 }
 
-.panel-title {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--gray-900);
-
-  .header-icon {
-    color: var(--gray-700);
-  }
+.panel-header-main {
+  display: contents;
 }
 
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.close-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--gray-500);
-  padding: 4px;
-  border-radius: 4px;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  &:hover {
-    background: var(--gray-100);
-    color: var(--gray-700);
-  }
-}
-
-.tabs {
-  display: flex;
-  background: var(--gray-25);
-  position: relative;
-  align-items: center;
-  padding: 8px 10px;
-  padding-top: 0px;
-  gap: 4px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--gray-150);
-}
-
-.tab-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.tab {
-  padding: 4px 12px;
-  border: none;
-  background: none;
-  color: var(--gray-600);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  transition: all 0.15s ease;
-  border-radius: 999px;
-
-  &:hover {
-    background: var(--gray-150);
-    color: var(--gray-900);
-  }
-
-  &.active {
-    background: var(--gray-150);
-    color: var(--gray-900);
-  }
-}
-
-.tab-action-btn {
+.header-action-btn {
   width: 28px;
   height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 999px;
+  border-radius: 6px;
   background: transparent;
   color: var(--gray-600);
   cursor: pointer;
@@ -768,9 +671,54 @@ watch(useInlinePreview, (isInline) => {
   transition: all 0.15s ease;
 
   &:hover {
-    background: var(--gray-150);
+    background: var(--gray-100);
     color: var(--gray-900);
   }
+
+  &:disabled {
+    color: var(--gray-300);
+    cursor: not-allowed;
+    background: transparent;
+  }
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  order: 1;
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--gray-900);
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .header-icon {
+    flex-shrink: 0;
+    color: var(--gray-700);
+  }
+}
+
+.file-toolbar,
+.window-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-toolbar {
+  order: 2;
+}
+
+.window-actions {
+  order: 3;
+  flex-shrink: 0;
 }
 
 .tab-content {
@@ -908,128 +856,8 @@ watch(useInlinePreview, (isInline) => {
   }
 }
 
-.todo-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.todo-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--gray-150);
-  transition: all 0.15s ease;
-
-  &:hover {
-    background: var(--main-10);
-    border-color: var(--gray-200);
-  }
-}
-
-.todo-status {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
-
-  .icon {
-    font-size: 16px;
-
-    &.completed {
-      color: #52c41a;
-    }
-    &.in-progress {
-      color: #1890ff;
-    }
-    &.pending {
-      color: #faad14;
-    }
-    &.cancelled {
-      color: #ff4d4f;
-    }
-    &.unknown {
-      color: var(--gray-400);
-    }
-  }
-}
-
-.todo-text {
-  flex: 1;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--gray-1000);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-
-  .todo-item.completed & {
-    color: var(--gray-500);
-    text-decoration: line-through;
-  }
-}
-
-.list-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  padding: 0 4px;
-
-  .list-header-left {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .count {
-    font-size: 13px;
-    color: var(--gray-500);
-  }
-
-  .info-icon {
-    color: var(--gray-400);
-    cursor: help;
-    transition: color 0.2s;
-
-    &:hover {
-      color: var(--main-500);
-    }
-  }
-
-  .add-btn {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    height: 28px;
-    border: 1px solid var(--gray-200);
-    border-radius: 6px;
-    background: var(--gray-0);
-    color: var(--gray-700);
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.2s;
-
-    &:hover:not(:disabled) {
-      background: var(--gray-50);
-      color: var(--main-700);
-      border-color: var(--main-300);
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  }
-}
-
 /* File Tree Styles - VS Code Style Refined */
 .file-tree-container {
-  padding: 4px;
   margin: 0 -4px;
   min-height: 0;
 }

@@ -14,7 +14,7 @@ from yuxi import config
 from yuxi.knowledge.base import FileStatus, KnowledgeBase
 from yuxi.knowledge.chunking.ragflow_like.dispatcher import chunk_markdown
 from yuxi.knowledge.chunking.ragflow_like.presets import resolve_chunk_processing_params
-from yuxi.knowledge.utils.kb_utils import get_embedding_config
+from yuxi.models.embed import get_embedding_model_info_by_id
 from yuxi.plugins.parser.unified import Parser
 from yuxi.utils import hashstr, logger
 from yuxi.utils.datetime_utils import utc_isoformat
@@ -56,7 +56,7 @@ class LightRagKB(KnowledgeBase):
 
         delimiter = "\n<|YUXI_CHUNK_DELIM|>\n"
         payload = delimiter.join(chunk["content"] for chunk in chunks if chunk.get("content"))
-        return payload, delimiter, True
+        return payload, delimiter, False  # 允许 LightRAG 基于进行二次切分，避免超限
 
     def delete_database(self, db_id: str) -> dict:
         """删除数据库，同时清除Milvus和Neo4j中的数据"""
@@ -262,7 +262,7 @@ class LightRagKB(KnowledgeBase):
 
     def _get_embedding_func(self, embed_info: dict):
         """获取 embedding 函数"""
-        config_dict = get_embedding_config(embed_info)
+        config_dict = get_embedding_model_info_by_id(embed_info["model_id"])
         logger.debug(f"Embedding config dict: {config_dict}")
 
         if config_dict.get("model_id") and config_dict["model_id"].startswith("ollama"):
@@ -302,7 +302,9 @@ class LightRagKB(KnowledgeBase):
             ),
         )
 
-    async def index_file(self, db_id: str, file_id: str, operator_id: str | None = None) -> dict:
+    async def index_file(
+        self, db_id: str, file_id: str, operator_id: str | None = None, params: dict | None = None
+    ) -> dict:
         """
         Index parsed file (Status: INDEXING -> INDEXED/ERROR_INDEXING)
 
@@ -310,6 +312,7 @@ class LightRagKB(KnowledgeBase):
             db_id: Database ID
             file_id: File ID
             operator_id: ID of the user performing the operation
+            params: Override processing params to apply during indexing (merged on top of stored params)
 
         Returns:
             Updated file metadata
@@ -345,6 +348,7 @@ class LightRagKB(KnowledgeBase):
 
             # Check markdown file exists
             if not file_meta.get("markdown_file"):
+                await self._mark_file_unparsed(file_id, operator_id)
                 raise ValueError("File has not been parsed yet (no markdown_file)")
 
             # Clear previous error if any
@@ -366,14 +370,15 @@ class LightRagKB(KnowledgeBase):
                 markdown_content = await self._read_markdown_from_minio(file_meta["markdown_file"])
                 file_path = file_meta.get("path")
                 filename = file_meta.get("filename") or file_id
-                processing_params = resolve_chunk_processing_params(
+                params = resolve_chunk_processing_params(
                     kb_additional_params=self.databases_meta.get(db_id, {}).get("metadata"),
                     file_processing_params=file_meta.get("processing_params"),
+                    request_params=params,
                 )
-                self.files_meta[file_id]["processing_params"] = processing_params
+                self.files_meta[file_id]["processing_params"] = params
                 await self._save_metadata()
 
-                chunks = chunk_markdown(markdown_content, file_id, filename, processing_params)
+                chunks = chunk_markdown(markdown_content, file_id, filename, params)
                 chunk_input, split_by_character, split_by_character_only = self._prepare_lightrag_insert_payload(chunks)
                 if not chunk_input:
                     chunk_input = markdown_content
@@ -393,7 +398,7 @@ class LightRagKB(KnowledgeBase):
 
                 logger.info(
                     f"Indexed file {file_id} into LightRAG with {len(chunks)} chunks, "
-                    f"chunk_preset_id={processing_params.get('chunk_preset_id')}"
+                    f"chunk_preset_id={params.get('chunk_preset_id')}"
                 )
 
                 # Update status
@@ -523,6 +528,36 @@ class LightRagKB(KnowledgeBase):
 
             return processed_items_info
 
+    @staticmethod
+    def _attach_file_ids_to_chunks(rag: LightRAG, chunks):
+        if not isinstance(chunks, list):
+            return chunks
+
+        text_chunks = getattr(rag, "text_chunks", None)
+        chunk_store = getattr(text_chunks, "_data", None)
+        if not isinstance(chunk_store, dict):
+            return chunks
+
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+
+            metadata = chunk.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            chunk_id = metadata.get("chunk_id") or chunk.get("chunk_id") or chunk.get("id")
+            if chunk_id and not metadata.get("chunk_id"):
+                metadata["chunk_id"] = str(chunk_id)
+
+            stored_chunk = chunk_store.get(chunk_id)
+            if isinstance(stored_chunk, dict) and stored_chunk.get("full_doc_id") and not metadata.get("file_id"):
+                metadata["file_id"] = str(stored_chunk["full_doc_id"])
+
+            chunk["metadata"] = metadata
+
+        return chunks
+
     async def aquery(self, query_text: str, db_id: str, agent_call: bool = False, **kwargs) -> str:
         """异步查询知识库"""
         rag = await self._get_lightrag_instance(db_id)
@@ -574,7 +609,7 @@ class LightRagKB(KnowledgeBase):
                 data = response.get("data", {}) or {}
 
                 if scope == "chunks":
-                    return data.get("chunks", [])
+                    return self._attach_file_ids_to_chunks(rag, data.get("chunks", []))
 
                 result = {}
                 if scope in ["graph", "all"]:
@@ -589,7 +624,7 @@ class LightRagKB(KnowledgeBase):
                     result["references"] = data.get("references", [])
 
                 if scope == "all":
-                    result["chunks"] = data.get("chunks", [])
+                    result["chunks"] = self._attach_file_ids_to_chunks(rag, data.get("chunks", []))
 
                 return result
 
